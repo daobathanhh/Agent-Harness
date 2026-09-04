@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package harness;
+
+option go_package = "github.com/daobathanh/celesnity/transport/grpc/pb";
+
+import "google/protobuf/timestamp.proto";
+
+service HarnessService {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc GetRun(GetRunRequest) returns (GetRunResponse);
+  rpc StreamEvents(StreamEventsRequest) returns (stream EventMessage);
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+}
+
+message CreateSessionRequest {
+  string model = 1;
+  string system_prompt = 2;
+}
+
+message CreateSessionResponse {
+  SessionMessage session = 1;
+}
+
+message SendMessageRequest {
+  string session_id = 1;
+  string message = 2;
+}
+
+message SendMessageResponse {
+  string run_id = 1;
+}
+
+message GetRunRequest {
+  string run_id = 1;
+}
+
+message GetRunResponse {
+  RunMessage run = 1;
+}
+
+message StreamEventsRequest {
+  string session_id = 1;
+  int64 from_seq = 2;
+}
+
+message EventMessage {
+  int64 seq = 1;
+  string session_id = 2;
+  string run_id = 3;
+  string type = 4;
+  string payload = 5;
+  google.protobuf.Timestamp at = 6;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {}
+
+message CancelRunRequest {
+  string run_id = 1;
+}
+
+message CancelRunResponse {}
+
+message SessionMessage {
+  string id = 1;
+  string model = 2;
+  string system_prompt = 3;
+  string status = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message RunMessage {
+  string id = 1;
+  string session_id = 2;
+  string status = 3;
+  int32 step_count = 4;
+  int32 tokens_used = 5;
+  google.protobuf.Timestamp started_at = 6;
+  optional google.protobuf.Timestamp ended_at = 7;
+  optional RunErrorMessage error = 8;
+}
+
+message RunErrorMessage {
+  string code = 1;
+  string message = 2;
+}

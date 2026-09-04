@@ -1,0 +1,6 @@
+.env
+bin/
+*.db
+*.db-wal
+*.db-shm
+*.pdf

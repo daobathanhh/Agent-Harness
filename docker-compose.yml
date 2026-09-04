@@ -1,0 +1,18 @@
+services:
+  harness:
+    build: .
+    ports:
+      - "9090:9090"
+    volumes:
+      - harness-data:/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    command:
+      - "--port=9090"
+      - "--db=/data/harness.db"
+      - "--mcp-cmd=mockmcp"
+      - "--provider=${PROVIDER:-mock}"
+      - "--model=${MODEL:-claude-sonnet-4-6}"
+
+volumes:
+  harness-data:
