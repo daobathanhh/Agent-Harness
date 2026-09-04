@@ -5,26 +5,22 @@ An agent runtime that a platform drives over gRPC. The agent reasons in a loop, 
 ## Boundaries
 
 ```
-                ┌─────────────┐
-                │  transport/  │  gRPC server-streaming, inproc passthrough
-                │  grpc/       │  thin adapter, no business logic
-                │  inproc/     │  proves boundary holds under real use
-                └──────┬──────┘
-                       │ core.AgentCore interface
-                ┌──────▼──────┐
-                │   agent/     │  loop, budget, cancel, no-progress detection
-                │              │  only depends on interfaces in core/
-                └──┬───┬───┬──┘
-                   │   │   │
-         ┌─────────┘   │   └─────────┐
-         ▼             ▼             ▼
-   core.LLMProvider  core.ToolRegistry  core.EventStore
-         │             │                 │
-   ┌─────▼─────┐ ┌────▼────┐     ┌─────▼─────┐
-   │ provider/  │ │ tools/  │     │  store/    │
-   │ anthropic/ │ │ mcp/    │     │  sqlite/   │
-   │ mock/      │ │         │     │            │
-   └────────────┘ └─────────┘     └────────────┘
+  transport/        gRPC server-streaming, inproc passthrough
+    grpc/           thin adapter, no business logic
+    inproc/         proves boundary holds under real use
+       |
+       | core.AgentCore interface
+       |
+    agent/           loop, budget, cancel, no-progress detection
+                     only depends on interfaces in core/
+       |
+       +-------------+-------------+
+       |              |             |
+  core.LLMProvider  core.ToolRegistry  core.EventStore
+       |              |             |
+  provider/        tools/        store/
+    anthropic/       mcp/          sqlite/
+    mock/
 ```
 
 ### Why the boundaries are where they are
