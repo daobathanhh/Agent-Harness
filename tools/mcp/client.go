@@ -145,8 +145,11 @@ func (c *Client) kill() {
 }
 
 func (c *Client) isConnected() bool {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
 	select {
-	case <-c.closed:
+	case <-closed:
 		return false
 	default:
 		return true
@@ -279,9 +282,10 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 func (c *Client) rawCall(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 
-	ch := make(chan callResult, 1)
 	c.mu.Lock()
-	c.pending[id] = ch
+	stdin, closed := c.stdin, c.closed
+	c.pending[id] = make(chan callResult, 1)
+	ch := c.pending[id]
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -301,7 +305,7 @@ func (c *Client) rawCall(ctx context.Context, method string, params any) (json.R
 	}
 
 	c.writeMu.Lock()
-	_, err = fmt.Fprintf(c.stdin, "%s\n", data)
+	_, err = fmt.Fprintf(stdin, "%s\n", data)
 	c.writeMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("write to mcp server: %w", err)
@@ -312,7 +316,7 @@ func (c *Client) rawCall(ctx context.Context, method string, params any) (json.R
 		return res.data, res.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.closed:
+	case <-closed:
 		return nil, fmt.Errorf("mcp server connection closed")
 	}
 }
@@ -324,8 +328,11 @@ func (c *Client) sendNotification(method string, params any) {
 		Params:  params,
 	}
 	data, _ := json.Marshal(req)
+	c.mu.Lock()
+	stdin := c.stdin
+	c.mu.Unlock()
 	c.writeMu.Lock()
-	fmt.Fprintf(c.stdin, "%s\n", data)
+	fmt.Fprintf(stdin, "%s\n", data)
 	c.writeMu.Unlock()
 }
 

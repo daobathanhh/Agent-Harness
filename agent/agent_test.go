@@ -185,16 +185,6 @@ func (s *memStore) LoadFrom(_ context.Context, sessionID string, fromSeq int64) 
 	return out, nil
 }
 
-func (s *memStore) NextSeq(_ context.Context, sessionID string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	evts := s.events[sessionID]
-	if len(evts) == 0 {
-		return 1, nil
-	}
-	return evts[len(evts)-1].Seq + 1, nil
-}
-
 func (s *memStore) Subscribe(sessionID string) (<-chan core.Event, func()) {
 	ch := make(chan core.Event, 128)
 	s.mu.Lock()

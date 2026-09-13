@@ -138,6 +138,8 @@ func mapError(err error) error {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	case strings.Contains(msg, "must not be empty"):
 		return status.Errorf(codes.InvalidArgument, "%v", err)
+	case strings.Contains(msg, "not owned"):
+		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	default:
 		return status.Errorf(codes.Internal, "%v", err)
 	}

@@ -18,7 +18,6 @@ type EventStore interface {
 	Append(ctx context.Context, event Event) error
 	AppendAndUpdateRun(ctx context.Context, event Event, run *Run) error
 	LoadFrom(ctx context.Context, sessionID string, fromSeq int64) ([]Event, error)
-	NextSeq(ctx context.Context, sessionID string) (int64, error)
 
 	Subscribe(sessionID string) (<-chan Event, func())
 

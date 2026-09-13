@@ -35,6 +35,7 @@ func rebuildMessages(events []core.Event) []core.Message {
 				Role:       core.RoleToolResult,
 				ToolCallID: p.CallID,
 				Content:    p.Content,
+				IsError:    p.IsError,
 			})
 			removePending(&pendingToolCalls, p.CallID)
 
@@ -45,6 +46,7 @@ func rebuildMessages(events []core.Event) []core.Message {
 				Role:       core.RoleToolResult,
 				ToolCallID: p.CallID,
 				Content:    "Error: " + p.Content,
+				IsError:    true,
 			})
 			removePending(&pendingToolCalls, p.CallID)
 
@@ -55,6 +57,7 @@ func rebuildMessages(events []core.Event) []core.Message {
 				Role:       core.RoleToolResult,
 				ToolCallID: p.CallID,
 				Content:    "Tool execution was interrupted before completion.",
+				IsError:    true,
 			})
 			removePending(&pendingToolCalls, p.CallID)
 		}
@@ -72,6 +75,7 @@ func flushPending(msgs *[]core.Message, pending *[]core.ToolCall) {
 			Role:       core.RoleToolResult,
 			ToolCallID: tc.ID,
 			Content:    "Tool execution was interrupted before completion.",
+			IsError:    true,
 		})
 	}
 	*pending = (*pending)[:0]

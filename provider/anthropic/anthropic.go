@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -134,11 +133,10 @@ func convertMessages(msgs []core.Message) []sdk.MessageParam {
 		case core.RoleToolResult:
 			var toolResults []sdk.ContentBlockParamUnion
 			for i < len(msgs) && msgs[i].Role == core.RoleToolResult {
-				isErr := strings.HasPrefix(msgs[i].Content, "Error: ")
 				toolResults = append(toolResults, sdk.NewToolResultBlock(
 					msgs[i].ToolCallID,
 					msgs[i].Content,
-					isErr,
+					msgs[i].IsError,
 				))
 				i++
 			}

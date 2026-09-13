@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daobathanh/celesnity/core"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func tempStore(t *testing.T) *Store {
@@ -190,23 +192,6 @@ func TestAppendAndLoadEvents(t *testing.T) {
 	}
 }
 
-func TestNextSeq(t *testing.T) {
-	s := tempStore(t)
-	ctx := context.Background()
-
-	seq, _ := s.NextSeq(ctx, "s1")
-	if seq != 1 {
-		t.Fatalf("expected 1 for empty session, got %d", seq)
-	}
-
-	s.Append(ctx, core.Event{SessionID: "s1", RunID: "r1", Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now()})
-	s.Append(ctx, core.Event{SessionID: "s1", RunID: "r1", Type: core.EventModelRequest, Payload: []byte("{}"), At: time.Now()})
-
-	seq, _ = s.NextSeq(ctx, "s1")
-	if seq != 3 {
-		t.Fatalf("expected 3, got %d", seq)
-	}
-}
 
 func TestAppendAndUpdateRunAtomic(t *testing.T) {
 	s := tempStore(t)
@@ -399,4 +384,59 @@ func TestDatabasePersistsAcrossReopen(t *testing.T) {
 	}
 
 	_ = os.Remove(dbPath)
+}
+
+func TestMigrateOldDBWithDuplicateRunningRuns(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "old.db")
+
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY, model TEXT NOT NULL,
+			system_prompt TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS runs (
+			id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+			status TEXT NOT NULL, step_count INTEGER NOT NULL DEFAULT 0,
+			tokens_used INTEGER NOT NULL DEFAULT 0,
+			started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP, error TEXT
+		);
+		CREATE TABLE IF NOT EXISTS events (
+			session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+			run_id TEXT NOT NULL, type TEXT NOT NULL,
+			payload TEXT NOT NULL DEFAULT '{}', at TIMESTAMP NOT NULL,
+			PRIMARY KEY (session_id, seq)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("create tables: %v", err)
+	}
+
+	now := time.Now()
+	db.Exec(`INSERT INTO sessions (id, model, status, created_at) VALUES ('s1', 'm', 'active', ?)`, now)
+	db.Exec(`INSERT INTO runs (id, session_id, status, started_at) VALUES ('r1', 's1', 'running', ?)`, now)
+	db.Exec(`INSERT INTO runs (id, session_id, status, started_at) VALUES ('r2', 's1', 'running', ?)`, now)
+	db.Close()
+
+	store, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() should succeed on old DB with duplicate running runs, got: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	r1, _ := store.GetRun(ctx, "r1")
+	r2, _ := store.GetRun(ctx, "r2")
+	if r1.Status != core.RunInterrupted {
+		t.Fatalf("r1: expected interrupted, got %s", r1.Status)
+	}
+	if r2.Status != core.RunInterrupted {
+		t.Fatalf("r2: expected interrupted, got %s", r2.Status)
+	}
 }

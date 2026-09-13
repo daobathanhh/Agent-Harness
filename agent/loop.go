@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +106,9 @@ func (a *Agent) SendMessage(ctx context.Context, sessionID, msg string) (string,
 		StartedAt: time.Now(),
 	}
 	if err := a.store.SaveRun(ctx, run); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			return "", fmt.Errorf("agent: session %q already has a running run", sessionID)
+		}
 		return "", fmt.Errorf("agent: save run: %w", err)
 	}
 
@@ -191,6 +195,13 @@ func (a *Agent) CancelRun(ctx context.Context, runID string) error {
 	a.mu.Unlock()
 
 	if !ok {
+		run, err = a.store.GetRun(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("agent: %w", err)
+		}
+		if run.Status != core.RunRunning {
+			return nil
+		}
 		return fmt.Errorf("agent: run %q is marked running but not owned by this process", runID)
 	}
 	cancel()
@@ -347,6 +358,7 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 				msgs = append(msgs, core.Message{
 					Role: core.RoleToolResult, ToolCallID: tc.ID,
 					Content: fmt.Sprintf("Error: %s", errMsg),
+					IsError: true,
 				})
 				continue
 			}
@@ -360,6 +372,7 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 				msgs = append(msgs, core.Message{
 					Role: core.RoleToolResult, ToolCallID: tc.ID,
 					Content: fmt.Sprintf("Error: %s. Please provide a valid JSON object as arguments.", errMsg),
+					IsError: true,
 				})
 				continue
 			}
@@ -402,6 +415,7 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 					Role:       core.RoleToolResult,
 					ToolCallID: tc.ID,
 					Content:    fmt.Sprintf("Error: %s", errMsg),
+					IsError:    true,
 				})
 				continue
 			}
@@ -419,6 +433,7 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 				Role:       core.RoleToolResult,
 				ToolCallID: tc.ID,
 				Content:    truncateToolResult(result.Content),
+				IsError:    result.IsError,
 			})
 		}
 

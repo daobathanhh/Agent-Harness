@@ -68,6 +68,8 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
+		UPDATE runs SET status = 'interrupted', ended_at = CURRENT_TIMESTAMP
+			WHERE status = 'running';
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_run ON runs(session_id) WHERE status = 'running';
 	`)
 	return err
@@ -228,18 +230,6 @@ func (s *Store) LoadFrom(ctx context.Context, sessionID string, fromSeq int64) (
 	return events, rows.Err()
 }
 
-func (s *Store) NextSeq(ctx context.Context, sessionID string) (int64, error) {
-	var maxSeq sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE session_id = ?`, sessionID).Scan(&maxSeq)
-	if err != nil {
-		return 0, err
-	}
-	if !maxSeq.Valid {
-		return 1, nil
-	}
-	return maxSeq.Int64 + 1, nil
-}
-
 func (s *Store) Subscribe(sessionID string) (<-chan core.Event, func()) {
 	sub := &subscriber{ch: make(chan core.Event, 64)}
 	s.mu.Lock()
@@ -300,18 +290,32 @@ func (s *Store) MarkInterruptedRuns(ctx context.Context) (int64, error) {
 
 	payload, _ := json.Marshal(map[string]string{"reason": "process restart"})
 
+	var count int64
 	for _, r := range staleRuns {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
-			return 0, err
+			return count, err
 		}
-		tx.ExecContext(ctx, `
+		defer tx.Rollback()
+
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO events (session_id, seq, run_id, type, payload, at)
 			VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, 'run_interrupted', ?, ?)
 		`, r.sessionID, r.sessionID, r.id, string(payload), now)
-		tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', ended_at = ? WHERE id = ?`, now, r.id)
-		tx.Commit()
+		if err != nil {
+			return count, fmt.Errorf("insert interrupted event for run %s: %w", r.id, err)
+		}
+
+		_, err = tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', ended_at = ? WHERE id = ?`, now, r.id)
+		if err != nil {
+			return count, fmt.Errorf("update run %s to interrupted: %w", r.id, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return count, fmt.Errorf("commit interrupted run %s: %w", r.id, err)
+		}
+		count++
 	}
 
-	return int64(len(staleRuns)), nil
+	return count, nil
 }
