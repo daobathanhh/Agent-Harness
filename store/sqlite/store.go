@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/daobathanh/celesnity/core"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+var ErrRunNotFound = errors.New("run not found")
 
 type subscriber struct {
 	ch     chan core.Event
@@ -65,6 +68,7 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_run ON runs(session_id) WHERE status = 'running';
 	`)
 	return err
 }
@@ -121,7 +125,7 @@ func (s *Store) GetRun(ctx context.Context, id string) (*core.Run, error) {
 func (s *Store) GetActiveRun(ctx context.Context, sessionID string) (*core.Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, session_id, status, step_count, tokens_used, started_at, ended_at, error FROM runs WHERE session_id = ? AND status = 'running'`, sessionID)
 	run, err := s.scanRun(row)
-	if err != nil && err.Error() == fmt.Sprintf("run not found") {
+	if errors.Is(err, ErrRunNotFound) {
 		return nil, nil
 	}
 	return run, err
@@ -133,7 +137,7 @@ func (s *Store) scanRun(row *sql.Row) (*core.Run, error) {
 	var errJSON sql.NullString
 	if err := row.Scan(&run.ID, &run.SessionID, &run.Status, &run.StepCount, &run.TokensUsed, &run.StartedAt, &endedAt, &errJSON); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("run not found")
+			return nil, ErrRunNotFound
 		}
 		return nil, err
 	}
@@ -149,13 +153,16 @@ func (s *Store) scanRun(row *sql.Row) (*core.Run, error) {
 }
 
 func (s *Store) Append(ctx context.Context, event core.Event) error {
-	_, err := s.db.ExecContext(ctx, `
+	var seq int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO events (session_id, seq, run_id, type, payload, at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, event.SessionID, event.Seq, event.RunID, event.Type, string(event.Payload), event.At)
+		VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, ?, ?, ?)
+		RETURNING seq
+	`, event.SessionID, event.SessionID, event.RunID, event.Type, string(event.Payload), event.At).Scan(&seq)
 	if err != nil {
 		return err
 	}
+	event.Seq = seq
 	s.broadcast(event)
 	return nil
 }
@@ -173,10 +180,12 @@ func (s *Store) AppendAndUpdateRun(ctx context.Context, event core.Event, run *c
 	}
 	defer tx.Rollback()
 
-	_, err = tx.ExecContext(ctx, `
+	var seq int64
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO events (session_id, seq, run_id, type, payload, at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, event.SessionID, event.Seq, event.RunID, event.Type, string(event.Payload), event.At)
+		VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, ?, ?, ?)
+		RETURNING seq
+	`, event.SessionID, event.SessionID, event.RunID, event.Type, string(event.Payload), event.At).Scan(&seq)
 	if err != nil {
 		return err
 	}
@@ -192,6 +201,7 @@ func (s *Store) AppendAndUpdateRun(ctx context.Context, event core.Event, run *c
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	event.Seq = seq
 	s.broadcast(event)
 	return nil
 }
@@ -272,11 +282,36 @@ func (s *Store) broadcast(event core.Event) {
 
 func (s *Store) MarkInterruptedRuns(ctx context.Context) (int64, error) {
 	now := time.Now()
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE runs SET status = 'interrupted', ended_at = ? WHERE status = 'running'
-	`, now)
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id FROM runs WHERE status = 'running'`)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	var staleRuns []struct{ id, sessionID string }
+	for rows.Next() {
+		var r struct{ id, sessionID string }
+		if err := rows.Scan(&r.id, &r.sessionID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		staleRuns = append(staleRuns, r)
+	}
+	rows.Close()
+
+	payload, _ := json.Marshal(map[string]string{"reason": "process restart"})
+
+	for _, r := range staleRuns {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, err
+		}
+		tx.ExecContext(ctx, `
+			INSERT INTO events (session_id, seq, run_id, type, payload, at)
+			VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, 'run_interrupted', ?, ?)
+		`, r.sessionID, r.sessionID, r.id, string(payload), now)
+		tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', ended_at = ? WHERE id = ?`, now, r.id)
+		tx.Commit()
+	}
+
+	return int64(len(staleRuns)), nil
 }

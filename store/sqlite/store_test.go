@@ -166,9 +166,8 @@ func TestAppendAndLoadEvents(t *testing.T) {
 	s := tempStore(t)
 	ctx := context.Background()
 
-	for i := int64(1); i <= 5; i++ {
+	for i := 0; i < 5; i++ {
 		s.Append(ctx, core.Event{
-			Seq:       i,
 			SessionID: "s1",
 			RunID:     "r1",
 			Type:      core.EventModelRequest,
@@ -200,8 +199,8 @@ func TestNextSeq(t *testing.T) {
 		t.Fatalf("expected 1 for empty session, got %d", seq)
 	}
 
-	s.Append(ctx, core.Event{Seq: 1, SessionID: "s1", RunID: "r1", Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now()})
-	s.Append(ctx, core.Event{Seq: 2, SessionID: "s1", RunID: "r1", Type: core.EventModelRequest, Payload: []byte("{}"), At: time.Now()})
+	s.Append(ctx, core.Event{SessionID: "s1", RunID: "r1", Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now()})
+	s.Append(ctx, core.Event{SessionID: "s1", RunID: "r1", Type: core.EventModelRequest, Payload: []byte("{}"), At: time.Now()})
 
 	seq, _ = s.NextSeq(ctx, "s1")
 	if seq != 3 {
@@ -223,7 +222,7 @@ func TestAppendAndUpdateRunAtomic(t *testing.T) {
 	run.Status = core.RunSucceeded
 	run.EndedAt = &now
 	event := core.Event{
-		Seq: 1, SessionID: "s1", RunID: "r1",
+		SessionID: "s1", RunID: "r1",
 		Type: core.EventRunSucceeded, Payload: []byte("{}"), At: now,
 	}
 
@@ -246,11 +245,11 @@ func TestMarkInterruptedRuns(t *testing.T) {
 	s := tempStore(t)
 	ctx := context.Background()
 
-	sess := &core.Session{ID: "s1", Model: "m", Status: core.SessionActive, CreatedAt: time.Now()}
-	s.SaveSession(ctx, sess)
+	s.SaveSession(ctx, &core.Session{ID: "s1", Model: "m", Status: core.SessionActive, CreatedAt: time.Now()})
+	s.SaveSession(ctx, &core.Session{ID: "s2", Model: "m", Status: core.SessionActive, CreatedAt: time.Now()})
 
 	s.SaveRun(ctx, &core.Run{ID: "r1", SessionID: "s1", Status: core.RunRunning, StartedAt: time.Now()})
-	s.SaveRun(ctx, &core.Run{ID: "r2", SessionID: "s1", Status: core.RunRunning, StartedAt: time.Now()})
+	s.SaveRun(ctx, &core.Run{ID: "r2", SessionID: "s2", Status: core.RunRunning, StartedAt: time.Now()})
 	now := time.Now()
 	s.SaveRun(ctx, &core.Run{ID: "r3", SessionID: "s1", Status: core.RunSucceeded, StartedAt: time.Now(), EndedAt: &now})
 
@@ -272,6 +271,15 @@ func TestMarkInterruptedRuns(t *testing.T) {
 	if r3.Status != core.RunSucceeded {
 		t.Fatal("succeeded run should be unchanged")
 	}
+
+	events1, _ := s.LoadFrom(ctx, "s1", 0)
+	events2, _ := s.LoadFrom(ctx, "s2", 0)
+	if len(events1) != 1 || events1[0].Type != core.EventRunInterrupted {
+		t.Fatal("expected run_interrupted event for s1")
+	}
+	if len(events2) != 1 || events2[0].Type != core.EventRunInterrupted {
+		t.Fatal("expected run_interrupted event for s2")
+	}
 }
 
 func TestSubscribeAndBroadcast(t *testing.T) {
@@ -281,11 +289,11 @@ func TestSubscribeAndBroadcast(t *testing.T) {
 	ch, unsub := s.Subscribe("s1")
 	defer unsub()
 
-	event := core.Event{
-		Seq: 1, SessionID: "s1", RunID: "r1",
+	evt := core.Event{
+		SessionID: "s1", RunID: "r1",
 		Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now(),
 	}
-	s.Append(ctx, event)
+	s.Append(ctx, evt)
 
 	select {
 	case got := <-ch:
@@ -305,7 +313,7 @@ func TestUnsubscribeStopsBroadcast(t *testing.T) {
 	unsub()
 
 	s.Append(ctx, core.Event{
-		Seq: 1, SessionID: "s1", RunID: "r1",
+		SessionID: "s1", RunID: "r1",
 		Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now(),
 	})
 
@@ -333,9 +341,9 @@ func TestConcurrentBroadcastAndUnsubscribe(t *testing.T) {
 		}()
 	}
 
-	for i := int64(1); i <= 20; i++ {
+	for i := 0; i < 20; i++ {
 		s.Append(ctx, core.Event{
-			Seq: i, SessionID: "s1", RunID: "r1",
+			SessionID: "s1", RunID: "r1",
 			Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now(),
 		})
 	}
@@ -368,7 +376,7 @@ func TestDatabasePersistsAcrossReopen(t *testing.T) {
 	s1, _ := New(dbPath)
 	ctx := context.Background()
 	s1.SaveSession(ctx, &core.Session{ID: "s1", Model: "m", Status: core.SessionActive, CreatedAt: time.Now()})
-	s1.Append(ctx, core.Event{Seq: 1, SessionID: "s1", RunID: "r1", Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now()})
+	s1.Append(ctx, core.Event{SessionID: "s1", RunID: "r1", Type: core.EventRunStarted, Payload: []byte("{}"), At: time.Now()})
 	s1.Close()
 
 	s2, err := New(dbPath)

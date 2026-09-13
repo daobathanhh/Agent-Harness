@@ -21,9 +21,9 @@ type Client struct {
 	logger  *slog.Logger
 
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
-	stdout  *bufio.Scanner
 	pending map[int64]chan callResult
 	nextID  atomic.Int64
 	closed  chan struct{}
@@ -88,15 +88,16 @@ func (c *Client) connect() error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
+	closedCh := make(chan struct{})
+
 	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
-	c.stdout = scanner
 	c.pending = make(map[int64]chan callResult)
-	c.closed = make(chan struct{})
+	c.closed = closedCh
 	c.mu.Unlock()
 
-	go c.readLoop()
+	go c.readLoop(scanner, closedCh)
 
 	if err := c.initialize(); err != nil {
 		c.kill()
@@ -299,9 +300,9 @@ func (c *Client) rawCall(ctx context.Context, method string, params any) (json.R
 		return nil, err
 	}
 
-	c.mu.Lock()
+	c.writeMu.Lock()
 	_, err = fmt.Fprintf(c.stdin, "%s\n", data)
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("write to mcp server: %w", err)
 	}
@@ -323,15 +324,15 @@ func (c *Client) sendNotification(method string, params any) {
 		Params:  params,
 	}
 	data, _ := json.Marshal(req)
-	c.mu.Lock()
+	c.writeMu.Lock()
 	fmt.Fprintf(c.stdin, "%s\n", data)
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 }
 
-func (c *Client) readLoop() {
-	defer close(c.closed)
-	for c.stdout.Scan() {
-		line := c.stdout.Bytes()
+func (c *Client) readLoop(scanner *bufio.Scanner, closedCh chan struct{}) {
+	defer close(closedCh)
+	for scanner.Scan() {
+		line := scanner.Bytes()
 		var resp jsonrpcResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
 			c.logger.Warn("mcp: malformed response", "err", err)
@@ -355,13 +356,6 @@ func (c *Client) readLoop() {
 }
 
 func (c *Client) Close() error {
-	c.mu.Lock()
-	if c.stdin != nil {
-		c.stdin.Close()
-	}
-	c.mu.Unlock()
-	if c.cmd != nil {
-		return c.cmd.Wait()
-	}
+	c.kill()
 	return nil
 }

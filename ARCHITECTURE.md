@@ -61,13 +61,13 @@ An agent runtime that a platform drives over gRPC. The agent reasons in a loop, 
 | MCP server exit              | `readLoop` detects pipe close                                      | Auto-reconnect with exponential backoff (3 attempts). Tools cache cleared on reconnect |
 | Large tool result            | Content exceeds 20KB                                               | Truncated for model context. Full content stored in event log for traceability         |
 | Context overflow             | Total message chars > 400K                                         | Oldest tool_result content truncated first. User messages and structure preserved      |
-| Provider 429/5xx             | HTTP status code from Anthropic API                                | Retry with exponential backoff. 429 respects Retry-After header. Max 3 retries         |
-| Concurrent send              | `GetActiveRun` check before creating new run                       | Rejected with `AlreadyExists` gRPC status — one active run per session                 |
+| Provider 429/5xx + network   | HTTP status or `net.Error` from Anthropic API                      | Retry with exponential backoff. 429 respects Retry-After header. Max 3 retries         |
+| Concurrent send              | `GetActiveRun` check + partial unique index on `runs(session_id)`  | Rejected with `AlreadyExists` gRPC status. One active run per session                  |
 | Session closed               | `SessionStatus` check in `SendMessage`                             | Rejected with `FailedPrecondition` gRPC status                                         |
 | Invalid tool args JSON       | `json.Unmarshal` into `map[string]any`                             | Error fed to model with corrective message; `tool_call_failed` event emitted           |
 | MCP JSON-RPC error           | Server returns error object                                        | Proper Go error propagated (not raw JSON bytes)                                        |
 | Terminal event + run state   | `AppendAndUpdateRun` SQLite transaction                            | Atomic — no window where event is committed but run status is stale                    |
-| Stream subscriber disconnect | `unsub()` closes channel + recover in `broadcast`                  | No panic on send-to-closed-channel; slow consumers get events dropped                  |
+| Stream subscriber disconnect | `broadcast` checks `closed` flag under RLock, skips closed subs    | No panic on send-to-closed-channel. Slow consumers get events dropped                  |
 | Empty message                | Rejected at both gRPC (`InvalidArgument`) and agent layer          | Prevents creating a run with no user input                                             |
 | Graceful shutdown            | `Shutdown()` cancels all active runs before stopping gRPC          | Runs get `run_cancelled` events instead of being orphaned                              |
 

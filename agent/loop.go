@@ -190,9 +190,10 @@ func (a *Agent) CancelRun(ctx context.Context, runID string) error {
 	cancel, ok := a.cancels[runID]
 	a.mu.Unlock()
 
-	if ok {
-		cancel()
+	if !ok {
+		return fmt.Errorf("agent: run %q is marked running but not owned by this process", runID)
 	}
+	cancel()
 	return nil
 }
 
@@ -363,12 +364,6 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 				continue
 			}
 
-			a.emitEvent(run, core.EventToolCallRequested, core.ToolCallRequestedPayload{
-				CallID: tc.ID,
-				Name:   tc.Name,
-				Args:   tc.Args,
-			})
-
 			a.emitEvent(run, core.EventToolCallStarted, core.ToolCallRequestedPayload{
 				CallID: tc.ID,
 				Name:   tc.Name,
@@ -427,7 +422,9 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 			})
 		}
 
-		a.store.SaveRun(context.Background(), run)
+		if err := a.store.SaveRun(context.Background(), run); err != nil {
+			a.logger.Error("save run progress", "err", err)
+		}
 	}
 
 	a.emitEvent(run, core.EventBudgetExceeded, core.BudgetExceededPayload{
@@ -438,13 +435,7 @@ func (a *Agent) runLoop(ctx context.Context, sess *core.Session, run *core.Run, 
 }
 
 func (a *Agent) emitEvent(run *core.Run, eventType core.EventType, payload any) {
-	seq, err := a.store.NextSeq(context.Background(), run.SessionID)
-	if err != nil {
-		a.logger.Error("emit event: next seq", "err", err)
-		return
-	}
 	event := core.Event{
-		Seq:       seq,
 		SessionID: run.SessionID,
 		RunID:     run.ID,
 		Type:      eventType,
@@ -483,13 +474,7 @@ func (a *Agent) finishRun(run *core.Run, status core.RunStatus, runErr *core.Run
 		payload = core.RunTerminalPayload{}
 	}
 
-	seq, err := a.store.NextSeq(context.Background(), run.SessionID)
-	if err != nil {
-		a.logger.Error("finish run: next seq", "err", err)
-		return
-	}
 	event := core.Event{
-		Seq:       seq,
 		SessionID: run.SessionID,
 		RunID:     run.ID,
 		Type:      eventType,

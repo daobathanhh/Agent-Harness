@@ -136,6 +136,12 @@ func (s *memStore) GetActiveRun(_ context.Context, sessionID string) (*core.Run,
 func (s *memStore) Append(_ context.Context, event core.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	evts := s.events[event.SessionID]
+	if len(evts) == 0 {
+		event.Seq = 1
+	} else {
+		event.Seq = evts[len(evts)-1].Seq + 1
+	}
 	s.events[event.SessionID] = append(s.events[event.SessionID], event)
 	for _, ch := range s.subs[event.SessionID] {
 		select {
@@ -146,11 +152,25 @@ func (s *memStore) Append(_ context.Context, event core.Event) error {
 	return nil
 }
 
-func (s *memStore) AppendAndUpdateRun(ctx context.Context, event core.Event, run *core.Run) error {
-	if err := s.Append(ctx, event); err != nil {
-		return err
+func (s *memStore) AppendAndUpdateRun(_ context.Context, event core.Event, run *core.Run) error {
+	s.mu.Lock()
+	evts := s.events[event.SessionID]
+	if len(evts) == 0 {
+		event.Seq = 1
+	} else {
+		event.Seq = evts[len(evts)-1].Seq + 1
 	}
-	return s.SaveRun(ctx, run)
+	s.events[event.SessionID] = append(s.events[event.SessionID], event)
+	for _, ch := range s.subs[event.SessionID] {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+	cp := *run
+	s.runs[run.ID] = &cp
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *memStore) LoadFrom(_ context.Context, sessionID string, fromSeq int64) ([]core.Event, error) {
@@ -1152,7 +1172,6 @@ func TestEventSequenceOrdering(t *testing.T) {
 		core.EventRunStarted,
 		core.EventModelRequest,
 		core.EventModelResponse,
-		core.EventToolCallRequested,
 		core.EventToolCallStarted,
 		core.EventToolCallSucceeded,
 		core.EventModelRequest,

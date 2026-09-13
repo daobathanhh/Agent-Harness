@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -76,6 +78,15 @@ func (p *Provider) Complete(ctx context.Context, systemPrompt string, msgs []cor
 }
 
 func isRetryable(err error, backoff *time.Duration) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) {
 		return false
@@ -123,10 +134,11 @@ func convertMessages(msgs []core.Message) []sdk.MessageParam {
 		case core.RoleToolResult:
 			var toolResults []sdk.ContentBlockParamUnion
 			for i < len(msgs) && msgs[i].Role == core.RoleToolResult {
+				isErr := strings.HasPrefix(msgs[i].Content, "Error: ")
 				toolResults = append(toolResults, sdk.NewToolResultBlock(
 					msgs[i].ToolCallID,
 					msgs[i].Content,
-					false,
+					isErr,
 				))
 				i++
 			}
