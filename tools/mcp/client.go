@@ -284,8 +284,8 @@ func (c *Client) rawCall(ctx context.Context, method string, params any) (json.R
 
 	c.mu.Lock()
 	stdin, closed := c.stdin, c.closed
-	c.pending[id] = make(chan callResult, 1)
-	ch := c.pending[id]
+	ch := make(chan callResult, 1)
+	c.pending[id] = ch
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()

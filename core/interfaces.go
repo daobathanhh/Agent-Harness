@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+var ErrActiveRunExists = errors.New("session already has a running run")
 
 type LLMProvider interface {
 	Complete(ctx context.Context, systemPrompt string, msgs []Message, tools []ToolSpec) (*LLMResponse, error)

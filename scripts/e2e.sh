@@ -31,6 +31,19 @@ start_server() {
     local extra_flags="${2:-}"
     stop_server
     rm -f "$DB" "${DB}-wal" "${DB}-shm"
+    launch_server "$mcp_args" "$extra_flags"
+}
+
+restart_server() {
+    local mcp_args="${1:-}"
+    local extra_flags="${2:-}"
+    stop_server
+    launch_server "$mcp_args" "$extra_flags"
+}
+
+launch_server() {
+    local mcp_args="${1:-}"
+    local extra_flags="${2:-}"
     local -a cmd=("$BIN/harness" "--port=$PORT" "--db=$DB" "--mcp-cmd=$BIN/mockmcp" "--provider=mock")
     if [[ -n "$mcp_args" ]]; then
         cmd+=("--mcp-args=$mcp_args")
@@ -88,12 +101,12 @@ wait_run_done() {
 }
 
 new_session() {
-    "$BIN/harnessctl" session new 2>&1 | grep -oP 'Session created: \K\S+'
+    "$BIN/harnessctl" session new 2>&1 | sed -n 's/.*Session created: \(\S\+\).*/\1/p'
 }
 
 send_msg() {
     local sid="$1" msg="$2"
-    "$BIN/harnessctl" send "$sid" "$msg" 2>&1 | grep -oP 'Run started: \K\S+'
+    "$BIN/harnessctl" send "$sid" "$msg" 2>&1 | sed -n 's/.*Run started: \(\S\+\).*/\1/p'
 }
 
 # ── Build ──
@@ -223,6 +236,43 @@ if wait_run_done "$RUN8" 30; then
     assert_status "$RUN8" "succeeded" "Run succeeded after MCP reconnect"
 else
     fail "Run did not finish (MCP reconnect phase)"
+fi
+
+# ── Phase 9: Crash recovery (kill -9 mid-run, restart, assert interrupted + event) ──
+log "Phase 9: Crash recovery (kill -9 mid-run, restart, verify interrupted)"
+
+start_server "" "--mock-latency=5s"
+pass "Server started for crash recovery (5s latency)"
+
+SID9=$(new_session)
+RUN9=$(send_msg "$SID9" "Check machine CNC-001")
+sleep 1
+
+kill -9 "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+pass "Server killed with SIGKILL mid-run"
+
+restart_server "" "--mock-latency=0s"
+pass "Server restarted (same DB, 0s latency)"
+
+if wait_run_done "$RUN9" 10; then
+    assert_status "$RUN9" "interrupted" "Crashed run marked interrupted on restart"
+else
+    fail "Crashed run not resolved after restart"
+fi
+
+WATCH9=$(mktemp)
+timeout 5 "$BIN/harnessctl" watch "$SID9" --from-seq 0 > "$WATCH9" 2>&1 || true
+W9OUT=$(cat "$WATCH9")
+rm -f "$WATCH9"
+assert_contains "$W9OUT" "run_interrupted" "run_interrupted event emitted after crash recovery"
+
+RUN9B=$(send_msg "$SID9" "Create work order WO-999")
+if wait_run_done "$RUN9B" 20; then
+    assert_status "$RUN9B" "succeeded" "New run succeeds after crash recovery"
+else
+    fail "New run did not finish after crash recovery"
 fi
 
 # ── Summary ──

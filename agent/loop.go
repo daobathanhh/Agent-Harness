@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -106,7 +106,7 @@ func (a *Agent) SendMessage(ctx context.Context, sessionID, msg string) (string,
 		StartedAt: time.Now(),
 	}
 	if err := a.store.SaveRun(ctx, run); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if errors.Is(err, core.ErrActiveRunExists) {
 			return "", fmt.Errorf("agent: session %q already has a running run", sessionID)
 		}
 		return "", fmt.Errorf("agent: save run: %w", err)

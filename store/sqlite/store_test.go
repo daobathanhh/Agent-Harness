@@ -433,10 +433,36 @@ func TestMigrateOldDBWithDuplicateRunningRuns(t *testing.T) {
 	ctx := context.Background()
 	r1, _ := store.GetRun(ctx, "r1")
 	r2, _ := store.GetRun(ctx, "r2")
-	if r1.Status != core.RunInterrupted {
-		t.Fatalf("r1: expected interrupted, got %s", r1.Status)
+
+	// migrate() only cleans duplicates: keeps MIN(id) running for MarkInterruptedRuns
+	if r1.Status != core.RunRunning {
+		t.Fatalf("r1 (MIN id): expected running after migrate, got %s", r1.Status)
 	}
 	if r2.Status != core.RunInterrupted {
-		t.Fatalf("r2: expected interrupted, got %s", r2.Status)
+		t.Fatalf("r2 (duplicate): expected interrupted after migrate, got %s", r2.Status)
+	}
+
+	// MarkInterruptedRuns handles the remaining one with proper event emission
+	count, err := store.MarkInterruptedRuns(ctx)
+	if err != nil {
+		t.Fatalf("MarkInterruptedRuns: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 interrupted run, got %d", count)
+	}
+	r1, _ = store.GetRun(ctx, "r1")
+	if r1.Status != core.RunInterrupted {
+		t.Fatalf("r1 after MarkInterruptedRuns: expected interrupted, got %s", r1.Status)
+	}
+
+	events, _ := store.LoadFrom(ctx, "s1", 0)
+	found := false
+	for _, e := range events {
+		if e.Type == "run_interrupted" && e.RunID == "r1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected run_interrupted event for r1")
 	}
 }

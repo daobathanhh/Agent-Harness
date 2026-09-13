@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,7 +70,10 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id);
 		UPDATE runs SET status = 'interrupted', ended_at = CURRENT_TIMESTAMP
-			WHERE status = 'running';
+			WHERE status = 'running'
+			AND id NOT IN (
+				SELECT MIN(id) FROM runs WHERE status = 'running' GROUP BY session_id
+			);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_run ON runs(session_id) WHERE status = 'running';
 	`)
 	return err
@@ -116,6 +120,9 @@ func (s *Store) SaveRun(ctx context.Context, run *core.Run) error {
 			ended_at = excluded.ended_at,
 			error = excluded.error
 	`, run.ID, run.SessionID, run.Status, run.StepCount, run.TokensUsed, run.StartedAt, run.EndedAt, errJSON)
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint") {
+		return core.ErrActiveRunExists
+	}
 	return err
 }
 
@@ -292,30 +299,34 @@ func (s *Store) MarkInterruptedRuns(ctx context.Context) (int64, error) {
 
 	var count int64
 	for _, r := range staleRuns {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
+		if err := s.markOneInterrupted(ctx, r.id, r.sessionID, payload, now); err != nil {
 			return count, err
-		}
-		defer tx.Rollback()
-
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO events (session_id, seq, run_id, type, payload, at)
-			VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, 'run_interrupted', ?, ?)
-		`, r.sessionID, r.sessionID, r.id, string(payload), now)
-		if err != nil {
-			return count, fmt.Errorf("insert interrupted event for run %s: %w", r.id, err)
-		}
-
-		_, err = tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', ended_at = ? WHERE id = ?`, now, r.id)
-		if err != nil {
-			return count, fmt.Errorf("update run %s to interrupted: %w", r.id, err)
-		}
-
-		if err := tx.Commit(); err != nil {
-			return count, fmt.Errorf("commit interrupted run %s: %w", r.id, err)
 		}
 		count++
 	}
 
 	return count, nil
+}
+
+func (s *Store) markOneInterrupted(ctx context.Context, runID, sessionID string, payload []byte, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO events (session_id, seq, run_id, type, payload, at)
+		VALUES (?, COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?), 0) + 1, ?, 'run_interrupted', ?, ?)
+	`, sessionID, sessionID, runID, string(payload), now)
+	if err != nil {
+		return fmt.Errorf("insert interrupted event for run %s: %w", runID, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', ended_at = ? WHERE id = ?`, now, runID)
+	if err != nil {
+		return fmt.Errorf("update run %s to interrupted: %w", runID, err)
+	}
+
+	return tx.Commit()
 }
