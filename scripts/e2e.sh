@@ -111,7 +111,10 @@ send_msg() {
 
 # ── Build ──
 log "Building binaries"
-(cd "$ROOT" && go build -o "$BIN/harness" ./cmd/harness && go build -o "$BIN/harnessctl" ./cmd/harnessctl && go build -o "$BIN/mockmcp" ./cmd/mockmcp)
+if ! (cd "$ROOT" && go build -o "$BIN/harness" ./cmd/harness && go build -o "$BIN/harnessctl" ./cmd/harnessctl && go build -o "$BIN/mockmcp" ./cmd/mockmcp); then
+    fail "Build failed"
+    exit 1
+fi
 pass "Build succeeded"
 
 # ── Start server ──

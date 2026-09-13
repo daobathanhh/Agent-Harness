@@ -121,7 +121,7 @@ func (s *Store) SaveRun(ctx context.Context, run *core.Run) error {
 			error = excluded.error
 	`, run.ID, run.SessionID, run.Status, run.StepCount, run.TokensUsed, run.StartedAt, run.EndedAt, errJSON)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint") {
-		return core.ErrActiveRunExists
+		return fmt.Errorf("%w: %v", core.ErrActiveRunExists, err)
 	}
 	return err
 }
