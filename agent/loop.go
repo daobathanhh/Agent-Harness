@@ -497,7 +497,20 @@ func (a *Agent) finishRun(run *core.Run, status core.RunStatus, runErr *core.Run
 		At:        now,
 	}
 
-	if err := a.store.AppendAndUpdateRun(context.Background(), event, run); err != nil {
-		a.logger.Error("finish run: atomic save", "err", err)
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := a.store.AppendAndUpdateRun(context.Background(), event, run); err != nil {
+			a.logger.Error("finish run: atomic save", "err", err, "attempt", attempt)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+				continue
+			}
+			a.logger.Error("finish run: retries exhausted, forcing interrupted", "run_id", run.ID)
+			run.Status = core.RunInterrupted
+			if saveErr := a.store.SaveRun(context.Background(), run); saveErr != nil {
+				a.logger.Error("finish run: fallback save also failed", "err", saveErr)
+			}
+		}
+		return
 	}
 }
